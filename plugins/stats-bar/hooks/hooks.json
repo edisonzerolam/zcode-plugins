@@ -1,0 +1,21 @@
+{
+  "description": "stats-bar 薄壳自愈：会话启动时检测 asar 补丁哨兵，失效自动重打（幂等、异常不阻塞）。",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "process",
+            "command": "python",
+            "args": [
+              "${ZCODE_PLUGIN_ROOT}/patch/ensure_patch.py",
+              "--session-check"
+            ],
+            "timeoutMs": 20000,
+            "statusMessage": "stats-bar 薄壳自检…"
+          }
+        ]
+      }
+    ]
+  }
+}

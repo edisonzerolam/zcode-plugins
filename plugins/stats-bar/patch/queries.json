@@ -1,0 +1,7 @@
+{
+  "mu": "SELECT COUNT(*) AS n, CAST(SUM(duration_ms) AS REAL) AS llm_ms, COALESCE(SUM(CASE WHEN output_tokens > 0 AND time_to_first_token_ms IS NOT NULL THEN duration_ms - time_to_first_token_ms ELSE 0 END), 0) AS decode_ms, COALESCE(SUM(COALESCE(time_to_first_token_ms,0)),0) AS ttf_ms, SUM(CASE WHEN output_tokens > 0 THEN output_tokens ELSE 0 END) AS out_tok, SUM(COALESCE(input_tokens,0)) AS in_tok, SUM(COALESCE(cache_read_input_tokens,0)) AS cr FROM model_usage WHERE session_id=:q AND query_source='main_turn' AND status='completed'",
+  "tool": "SELECT COUNT(*) AS n, COALESCE(SUM(COALESCE(duration_ms,0)),0) AS ms FROM tool_usage WHERE session_id=:q",
+  "rounds": "SELECT COUNT(DISTINCT turn_id) AS n FROM turn_usage WHERE session_id=:q AND status='completed'",
+  "titleById": "SELECT title FROM session WHERE id=:q",
+  "latestSession": "SELECT id, title FROM session WHERE time_compacting IS NULL AND time_archived IS NULL ORDER BY time_updated DESC LIMIT 1"
+}

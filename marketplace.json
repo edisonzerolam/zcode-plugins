@@ -1,0 +1,9 @@
+{
+  "name": "zcode-plugins",
+  "description": "Community plugin marketplace for ZCode: stats-bar (session usage stats).",
+  "plugins": [
+    {
+      "source": "plugins/stats-bar"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "stats-bar",
+  "version": "0.1.0",
+  "displayName": "Stats Bar",
+  "displayName_i18n": {
+    "en": "Stats Bar",
+    "zh-CN": "用量统计条"
+  },
+  "description": "Bottom status bar showing session token/latency stats: rounds, steps, LLM/tool time, first-token latency, tok/s, cache hit rate, and token usage. Inspired by DeepSeek Harness StatsLine.",
+  "description_i18n": {
+    "en": "Bottom status bar showing session token/latency stats: rounds, steps, LLM/tool time, first-token latency, tok/s, cache hit rate, and token usage. Inspired by DeepSeek Harness StatsLine.",
+    "zh-CN": "底部状态栏，显示当前会话的轮数、步数、LLM/工具耗时、首 token 延迟、tok/s、缓存命中率、token 用量。仿 DeepSeek Harness StatsLine。"
+  },
+  "author": {
+    "name": "linchang"
+  },
+  "license": "MIT",
+  "category": "developer-tools",
+  "keywords": ["stats", "bar", "token", "usage", "status", "latency"],
+  "hooks": "hooks"
+}
