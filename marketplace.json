@@ -3,7 +3,18 @@
   "description": "Community plugin marketplace for ZCode: stats-bar (session usage stats).",
   "plugins": [
     {
-      "source": "plugins/stats-bar"
+      "name": "stats-bar",
+      "source": "plugins/stats-bar",
+      "version": "0.4.0",
+      "displayName": "Stats Bar",
+      "displayName_i18n": {
+        "zh-CN": "用量统计条"
+      },
+      "description": "DSH StatsLine-style usage bar pinned to the session UI: rounds, steps, LLM/tool time, first-token latency, tok/s, cache hit rate and token usage. Ships a /stats command and MCP tools (stats_session / stats_latest / stats_schema) on the same caliber. The bar is delivered by an idempotent asar patch: run patch/elevate-install.cmd once (UAC) to install; a highest-privilege logon task re-patches automatically after ZCode updates.",
+      "description_i18n": {
+        "zh-CN": "DSH StatsLine 式会话用量统计条，直接钉在会话界面底部：轮数/步数、LLM/工具耗时、首 token 延迟、tok/s、缓存命中率、token 用量。附 /stats 命令与 MCP 工具（stats_session / stats_latest / stats_schema），三者同口径。状态条由幂等 asar 补丁交付：运行 patch/elevate-install.cmd 一次（UAC 确认）完成安装，最高权限登录任务在 ZCode 更新后自动重打。"
+      },
+      "category": "developer-tools"
     }
   ]
 }

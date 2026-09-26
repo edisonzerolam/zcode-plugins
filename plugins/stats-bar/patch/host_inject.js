@@ -2,48 +2,35 @@
 import _zcsbHttp from "node:http";
 import _zcsbPath from "node:path";
 import _zcsbFsp from "node:fs/promises";
+import { createRequire as _zcsbCreateRequire } from "node:module";
+const _zcsbRequire = _zcsbCreateRequire(import.meta.url);
 (function () {
   if (globalThis.__ZC_STATS_BAR_PATCHED__) return;
   globalThis.__ZC_STATS_BAR_PATCHED__ = true;
   const SENTINEL = "ZC_STATS_BAR_PATCH_V1";
   const ZC_PORT = parseInt(process.env.ZCODE_STATS_BAR_PORT || "", 10) || 45200;
-  const ZC_SQL = /*__ZCSB_QUERIES__*/ null;
   (async function init() {
-    let _zcsbSqlite = null;
-    let fallbackDbs = null;
-    async function loadSql() {
-      if (_zcsbSqlite) return _zcsbSqlite;
-      try { _zcsbSqlite = await import("node:sqlite"); return _zcsbSqlite; }
-      catch {}
-      return null;
-    }
-    async function findFallbackDbs() {
-      if (fallbackDbs) return fallbackDbs;
-      const found = new Set();
-      const env = process.env.ZCODE_STATS_DB_PATH;
-      if (env) { try { await _zcsbFsp.access(env, 0); found.add(env); } catch {} }
-      try {
-        const sp = _zcsbPath.join(process.env.USERPROFILE || "", ".zcode", "v2", "setting.json");
-        const s = JSON.parse(await _zcsbFsp.readFile(sp, "utf-8"));
-        const base = s.dataBaseDir || s.dataBasePath || "";
-        if (base) {
-          const p = _zcsbPath.join(base, ".zcode", "cli", "db", "db.sqlite");
-          try { await _zcsbFsp.access(p, 0); found.add(p); } catch {}
-        }
-      } catch {}
-      try {
-        const p = _zcsbPath.join(process.env.USERPROFILE || "", ".zcode", "cli", "db", "db.sqlite");
-        try { await _zcsbFsp.access(p, 0); found.add(p); } catch {}
-      } catch {}
-      fallbackDbs = [...found];
-      return fallbackDbs;
-    }
-    async function resolveDb(ws) {
-      if (ws) {
-        const p = _zcsbPath.join(ws, ".zcode", "cli", "db", "db.sqlite");
-        try { await _zcsbFsp.access(p, 0); return p; } catch {}
+    // ── 共享口径模块 compute.mjs（单一事实源）──
+    // 优先 import 插件目录下的 compute.mjs；找不到时回退到内联副本（apply_patch.py 构建时注入）。
+    // 这样 UI bar 轮询与 MCP server 用同一份口径逻辑，杜绝两处 SQL 漂移。
+    let _zcsbCompute = null;
+    async function loadCompute() {
+      if (_zcsbCompute) return _zcsbCompute;
+      const root = process.env.ZCODE_PLUGIN_ROOT || "";
+      const cands = [];
+      if (root) cands.push(_zcsbPath.join(root, "compute.mjs"));
+      cands.push(_zcsbPath.join(process.env.USERPROFILE || "", "Agent", ".zcode", "plugins", "stats-bar", "compute.mjs"));
+      cands.push(_zcsbPath.join(process.env.USERPROFILE || "", ".zcode", "plugins", "stats-bar", "compute.mjs"));
+      for (const p of cands) {
+        try {
+          await _zcsbFsp.access(p, 0);
+          _zcsbCompute = await import(p);
+          return _zcsbCompute;
+        } catch {}
       }
-      return findFallbackDbs();
+      // 兜底：内联副本（构建时由 apply_patch.py 把 compute.mjs 内容替换进下方占位符）
+      _zcsbCompute = /*__ZCSB_COMPUTE_INLINE__*/ null;
+      return _zcsbCompute;
     }
     function send(res, code, obj, cors) {
       const h = { "content-type": "application/json; charset=utf-8" };
@@ -59,63 +46,7 @@ import _zcsbFsp from "node:fs/promises";
       return true;
     }
     function empty() {
-      return { sessionId: null, title: null, rounds: 0, steps: 0, llmMs: 0, toolMs: 0, avgTtft: 0, throughput: 0, cacheHit: 0, inputTokens: 0, outputTokens: 0, ready: false };
-    }
-    function fillStats(res, handle, sid) {
-      const mu = handle.prepare(ZC_SQL.mu).get({ q: sid });
-      const tool = handle.prepare(ZC_SQL.tool).get({ q: sid });
-      const rounds = handle.prepare(ZC_SQL.rounds).get({ q: sid });
-      const n = mu.n || 0;
-      if (n === 0) return false;
-      const inT = mu.in_tok || 0;
-      const cr = mu.cr || 0;
-      const outT = mu.out_tok || 0;
-      const llmMs = mu.llm_ms || 0;
-      const decodeMs = mu.decode_ms || 0;
-      const ttfMs = mu.ttf_ms || 0;
-      res.rounds = rounds.n || 0;
-      res.steps = n;
-      res.llmMs = llmMs;
-      res.avgTtft = n ? (ttfMs / n) : 0;
-      res.throughput = decodeMs > 0 ? (outT / (decodeMs / 1000)) : 0;
-      res.cacheHit = inT > 0 ? Math.round(cr / inT * 100) : 0;
-      res.inputTokens = inT;
-      res.outputTokens = outT;
-      res.toolMs = tool.ms || 0;
-      res.ready = true;
-      return true;
-    }
-    async function compute(sid, ws) {
-      const sqlite = await loadSql();
-      if (!sqlite) return Object.assign({}, empty(), { error: "node:sqlite unavailable" });
-      const dbOrPaths = await resolveDb(ws);
-      const dbList = typeof dbOrPaths === "string" ? [dbOrPaths] : dbOrPaths;
-      if (!dbList.length) return Object.assign({}, empty(), { error: "db not found" });
-      const res = empty();
-      for (const dbPath of dbList) {
-        let handle = null;
-        try {
-          handle = new sqlite.DatabaseSync(dbPath);
-          if (sid) {
-            const t = handle.prepare(ZC_SQL.titleById).get({ q: sid });
-            if (t) { res.title = t.title; res.sessionId = sid; }
-            if (res.sessionId && fillStats(res, handle, sid)) break;
-            if (res.sessionId) break;
-          } else {
-            const t = handle.prepare(ZC_SQL.latestSession).get();
-            if (t && fillStats(res, handle, t.id)) {
-              res.sessionId = t.id;
-              res.title = t.title;
-              break;
-            }
-          }
-        } catch (e) {
-          console.warn("[stats-bar] db error:", dbPath, e && e.message);
-        } finally {
-          try { if (handle) handle.close(); } catch {}
-        }
-      }
-      return res;
+      return { sessionId: null, title: null, rounds: 0, steps: 0, llmMs: 0, toolMs: 0, toolN: 0, avgTtft: 0, throughput: 0, cacheHit: 0, inputTokens: 0, outputTokens: 0, ttftCovered: 0, ready: false };
     }
     async function handler(req, res) {
       if (req.method === "OPTIONS") { res.writeHead(204, { "access-control-allow-origin": "*" }); res.end(); return; }
@@ -130,7 +61,12 @@ import _zcsbFsp from "node:fs/promises";
         ws = u.searchParams.get("ws") || null;
       } catch {}
       try {
-        const stats = await compute(sid, ws);
+        const compute = await loadCompute();
+        if (!compute || typeof compute.computeStats !== "function") {
+          send(res, 500, { error: "compute module unavailable" }, true);
+          return;
+        }
+        const stats = compute.computeStats(sid, ws);
         send(res, 200, stats, true);
       } catch (e) {
         send(res, 500, { error: (e && e.message) || String(e) }, true);

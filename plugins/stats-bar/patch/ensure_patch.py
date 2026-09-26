@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""ensure_patch.py — stats-bar 薄壳自愈入口（SessionStart hook / 登录任务共用）。"""
+"""ensure_patch.py — stats-bar 薄壳自愈入口。
+
+两种触发方式，权限语义不同：
+  --session-check  SessionStart hook 调用：只检测，绝不写 asar。ZCode 0.16.x 装在
+                   Program Files，会话内无法提权，补丁缺失时落 pending.flag 交给
+                   登录自愈任务或手动 elevate-install.cmd 处理。
+  --run            登录自愈任务（ZCodeStatsBarSelfHeal，/RL HIGHEST）或提权控制台
+                   调用：检测缺失即重打（需 ZCode 桌面端已退出）。
+
+检测为毫秒级：按 asar 头部索引只读 out/host/index.js 与 out/renderer/index.html
+两个注入目标的内容找哨兵，不再整读 300MB+ 的文件体（头部损坏时回退旧的整块扫描）。
+"""
 import argparse
 import datetime
 import os
@@ -28,6 +39,9 @@ def _find_asar():
 
 ASAR_PATH = os.path.realpath(_find_asar())
 SENTINEL = b"ZC_STATS_BAR_PATCH_V1"
+HOST_PATH = "out/host/index.js"
+HTML_PATH = "out/renderer/index.html"
+TARGETS = {HOST_PATH, HTML_PATH}
 LOG_PATH = os.path.realpath(os.path.join(HERE, "patch.log"))
 PENDING = os.path.realpath(os.path.join(HERE, "pending.flag"))
 APPLY = os.path.realpath(os.path.join(HERE, "apply_patch.py"))
@@ -43,6 +57,7 @@ def log(msg):
 
 
 def sentinel_ok(path):
+    """旧整块扫描兜底：头部损坏时仍能判断哨兵是否存在。"""
     size = os.path.getsize(path)
     if size <= CHUNK:
         with open(path, "rb") as f:
@@ -59,6 +74,16 @@ def sentinel_ok(path):
             prev = chunk[-overlap:]
 
 
+def patch_state():
+    """毫秒级状态检测：'patched' / 'missing' / 'incompatible'；头部损坏返回 None。"""
+    entries = asarlib.read_entries(ASAR_PATH, TARGETS)
+    if entries is None:
+        return None
+    if not entries:
+        return "incompatible"
+    return "patched" if any(SENTINEL in v for v in entries.values()) else "missing"
+
+
 def remove_pending():
     try:
         os.remove(PENDING)
@@ -67,7 +92,8 @@ def remove_pending():
 
 
 def main():
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    # 同 apply_patch.py：不强制 utf-8，避免 cp936 控制台乱码
+    sys.stdout.reconfigure(errors="replace")
     ap = argparse.ArgumentParser()
     ap.add_argument("--session-check", action="store_true")
     ap.add_argument("--run", action="store_true")
@@ -75,17 +101,28 @@ def main():
     try:
         if not os.path.isfile(ASAR_PATH):
             return 0
-        if sentinel_ok(ASAR_PATH):
+        state = patch_state()
+        if state is None:
+            state = "patched" if sentinel_ok(ASAR_PATH) else "missing"
+        if state == "patched":
             if os.path.exists(PENDING):
                 remove_pending()
                 log("哨兵已恢复，清除 pending 标记")
             return 0
-        log("检测到补丁失效（哨兵缺失），尝试自愈")
+        if state == "incompatible":
+            log("asar 无薄壳锚点，薄壳不适用，跳过")
+            return 0
+        # state == "missing"（未打补丁）
+        if args.session_check:
+            asarlib.write_text(PENDING, "pending")
+            log("补丁缺失（{} 需管理员，会话内不重打），已落 pending；等待登录自愈任务或手动 elevate-install.cmd".format(ASAR_PATH))
+            return 0
+        # --run：提权上下文才走到这里
         if not asarlib.lock_probe(ASAR_PATH):
             asarlib.write_text(PENDING, "pending")
-            log("桌面端运行中无法替换，已落 pending；将在下次登录任务/会话自检时重试")
+            log("桌面端运行中无法替换，已落 pending；将在下次登录任务/提权运行时重试")
             return 0
-        r = subprocess.run(["python", APPLY, "apply"], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, APPLY, "apply"], capture_output=True, text=True)
         ok = r.returncode == 0
         log("自愈结果: rc={} {}".format(r.returncode, (r.stdout or r.stderr or "").strip()[-200:]))
         if ok:

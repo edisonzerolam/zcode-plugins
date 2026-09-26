@@ -27,6 +27,53 @@ def read_bytes(path):
         return f.read()
 
 
+def _header_and_base(path, max_header=64 * 1024 * 1024):
+    """两段式只读 asar 头部；返回 (hdr, content_base) 或 None（头部异常时调用方回退）。
+
+    asar 前 16 字节的第 4 个 uint32 是头部 JSON 长度 d，按 16+d 精确读取即得全量
+    文件清单，无需整读 300MB+ 的文件体。
+    """
+    size = os.path.getsize(path)
+    if size < 16:
+        return None
+    with open(path, "rb") as f:
+        head = f.read(16)
+        d = struct.unpack("<I", head[12:16])[0]
+        if d <= 0 or d > max_header or 16 + d > size:
+            return None
+        data = head + f.read(d)
+    try:
+        hdr, cb, _ = parse_header(data)
+        return hdr, cb
+    except Exception:
+        return None
+
+
+def header_prefix(path, max_header=64 * 1024 * 1024):
+    """只解析 asar 头部目录树；解析失败返回 None（调用方回退全量路径）。"""
+    r = _header_and_base(path, max_header)
+    return r[0] if r else None
+
+
+def read_entries(path, wanted):
+    """按头部索引精确读取指定路径的文件内容，返回 {path: bytes}。
+
+    头部解析失败返回 None；wanted 中不存在的路径不出现在结果里（调用方据此
+    区分"锚点缺失"与"哨兵缺失"）。只 seek+read 目标字节，不整读文件体。
+    """
+    r = _header_and_base(path)
+    if r is None:
+        return None
+    hdr, base = r
+    out = {}
+    with open(path, "rb") as f:
+        for p, e in walk_files(hdr):
+            if p in wanted and "unpacked" not in e:
+                f.seek(base + int(e["offset"]))
+                out[p] = f.read(e["size"])
+    return out
+
+
 def write_bytes(path, data):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
     with os.fdopen(fd, "wb") as f:

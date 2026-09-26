@@ -30,18 +30,33 @@
     if (!bar) return false;
     try {
       var dockContent = document.querySelector('[data-v4-composer-dock-content]');
-      if (!dockContent) return false;
-      if (bar.parentElement !== dockContent) {
-        dockContent.appendChild(bar);
+      if (dockContent) {
+        if (bar.parentElement !== dockContent) {
+          dockContent.appendChild(bar);
+        }
+        bar.style.position = "absolute";
+        bar.style.left = "50%";
+        bar.style.right = "auto";
+        bar.style.top = "auto";
+        bar.style.bottom = "calc(100% + 4px)";
+        bar.style.transform = "translateX(-50%)";
+        bar.style.width = "";
+        bar.style.maxWidth = "100%";
+        bar.style.margin = "0";
+        return true;
       }
-      bar.style.position = "absolute";
+    } catch {}
+    // 回退：0.16.x 若 composer dock DOM 变化找不到锚点，固定在窗口底部居中，保证 bar 仍可见。
+    try {
+      if (bar.parentElement !== document.body) document.body.appendChild(bar);
+      bar.style.position = "fixed";
       bar.style.left = "50%";
       bar.style.right = "auto";
       bar.style.top = "auto";
-      bar.style.bottom = "calc(100% + 4px)";
+      bar.style.bottom = "8px";
       bar.style.transform = "translateX(-50%)";
       bar.style.width = "";
-      bar.style.maxWidth = "100%";
+      bar.style.maxWidth = "90%";
       bar.style.margin = "0";
       return true;
     } catch { return false; }
@@ -92,7 +107,7 @@
     if (n >= 10) return Math.round(n) + " tok/s";
     return n.toFixed(1) + " tok/s";
   }
-  function render(s) {
+  function render(s, pinned) {
     if (!bar) createBar();
     attachBar();
     const content = bar.querySelector(".zcsb-content");
@@ -109,7 +124,8 @@
     if (sp.length) parts.push(sp.join(" \u00b7 "));
     parts.push("\u7f13\u5b58\u547d\u4e2d " + s.cacheHit + "%");
     parts.push("\u8f93\u5165 " + fmtTok(s.inputTokens) + " \u00b7 \u8f93\u51fa " + fmtTok(s.outputTokens));
-    content.textContent = parts.join(" | ");
+    // pinned=false 表示取不到当前会话 id（DOM 变化兜底），显示的是库内最近会话，加前缀如实标注
+    content.textContent = (pinned === false ? "\u6700\u8fd1\u00b7" : "") + parts.join(" | ");
     bar.style.display = hidden ? "none" : "flex";
   }
   function candidates() {
@@ -134,16 +150,17 @@
     if (!BASE) { BASE = await findBase(); }
     if (!BASE) return;
     var sid = getActiveSessionId();
-    if (!sid || sid === "__draft__") { if (bar) bar.style.display = "none"; return; }
+    if (sid === "__draft__") { if (bar) bar.style.display = "none"; return; }
+    var pinned = !!sid;
     var ws = detectWorkspace();
     lastSid = sid;
-    let url = sid ? BASE + "/stats/" + sid : BASE + "/stats/latest";
+    let url = pinned ? BASE + "/stats/" + sid : BASE + "/stats/latest";
     if (ws) url += "?ws=" + encodeURIComponent(ws);
     try {
       const r = await fetch(url, { headers: { "x-zc-stats-bar": SENTINEL } });
       if (!r.ok) return;
       const j = await r.json();
-      render(j);
+      render(j, pinned);
     } catch {}
   }
   createBar();

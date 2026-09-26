@@ -1,5 +1,5 @@
 {
-  "description": "stats-bar 薄壳自愈：会话启动时检测 asar 补丁哨兵，失效自动重打（幂等、异常不阻塞）。",
+  "description": "stats-bar 薄壳自检：会话启动时按 asar 头部索引毫秒级检测补丁哨兵。缺失时只落 pending 交由登录自愈任务/手动提权处理，会话内绝不写 asar（Program Files 需管理员）。",
   "hooks": {
     "SessionStart": [
       {

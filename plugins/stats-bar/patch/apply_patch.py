@@ -12,6 +12,10 @@
   out/renderer/index.html               注入底部 bar 脚本（position:fixed; bottom:0）
 安全约束: 桌面运行中拒绝替换（rename 探锁）；备份目录保留 2 份；锚点失配整体放弃。
 注入文本存放在同目录 host_inject.js / html_inject.js，运行时读取。
+注意: v0.3.0 起薄壳补丁退役为旧版手动方案——ZCode 0.16.x 装在 Program Files，
+写入需管理员且须先关闭桌面端，SessionStart 自愈无法提权，故不再作为插件功能维护。
+status/apply 先做 asar 头部预检：锚点缺失（结构不适用）时明确拒绝，不整读 asar。
+本工具对 0.16.9 实测仍可定位锚点并构建 candidate（2026-09-26），手动打补丁仍可行。
 """
 import argparse
 import datetime
@@ -57,7 +61,22 @@ HTML_PATH = "out/renderer/index.html"
 HTML_ANCHOR = "</body>"
 HOST_INJECT_PATH = os.path.join(PATCH_DIR, "host_inject.js")
 HTML_INJECT_PATH = os.path.join(PATCH_DIR, "html_inject.js")
-QUERIES_PATH = os.path.join(PATCH_DIR, "queries.json")
+COMPUTE_PATH = os.path.join(PATCH_DIR, "..", "compute.mjs")
+
+
+def anchor_check():
+    """廉价结构预检（只读头部）：返回 None=兼容（含锚点或头部损坏走全量路径）；返回字符串=不适用原因。
+
+    asar 头部含全量文件清单，无需整读 300MB+ 即可判断锚点是否存在。
+    """
+    hdr = asarlib.header_prefix(ASAR_PATH)
+    if hdr is None:
+        return None  # 头部解析失败，交给原有全量路径给出精确报错
+    paths = {p for p, _ in asarlib.walk_files(hdr)}
+    missing = [p for p in (HOST_PATH, HTML_PATH) if p not in paths]
+    if missing:
+        return "asar 不含补丁锚点 {}：结构与薄壳补丁不适用（薄壳自 v0.3.0 退役为手动方案，插件功能请用 /stats 命令与 MCP 工具）".format(missing)
+    return None
 
 
 def read_inject(path):
@@ -100,9 +119,27 @@ def strip_old_injects(src, kind):
 def new_contents(data, force=False):
     hdr, cb, by_path = locate(data)
     host_inject = read_inject(HOST_INJECT_PATH)
-    with open(QUERIES_PATH, encoding="utf-8") as f:
-        queries_json = f.read()
-    host_inject = host_inject.replace("/*__ZCSB_QUERIES__*/ null", queries_json, 1)
+    # 把 compute.mjs 内容内联为兜底（asar 里 import 不到插件目录时用）。
+    # compute.mjs 是 ESM：剥掉 import 行（其依赖在 host_inject 顶部已 import 同名别名）+ 去 export，
+    # 包成 async IIFE 返回 { computeStats, QUERIES }，与 host_inject 的 loadCompute() 接口对齐。
+    with open(COMPUTE_PATH, encoding="utf-8") as f:
+        compute_src = f.read()
+    body = "\n".join(
+        ln for ln in compute_src.splitlines()
+        if not ln.strip().startswith("import ")
+    ).replace("export function", "function").replace("export { QUERIES };", "").replace("export const", "const")
+    # 保险：剥掉任何残留的 export 关键字（防止将来 compute.mjs 加新导出时内联语法炸）
+    body = body.replace("export ", "")
+    # compute.mjs 的 import（DatabaseSync/join/createRequire）被剥掉后，在 IIFE 内补本地绑定，
+    # 使内联副本自足（host_inject 顶部虽有同库 import，但别名不同、作用域在外，不能复用）。
+    header = ("const { DatabaseSync } = await import('node:sqlite');\n"
+              "const { join } = await import('node:path');\n"
+              "const { createRequire } = await import('node:module');\n")
+    body = header + body
+    body = body.replace("const require = createRequire(import.meta.url);",
+                        "const require = createRequire(import.meta.url);")
+    inline_iife = "(async () => {\n" + body + "\nreturn { computeStats, QUERIES };\n})()"
+    host_inject = host_inject.replace("/*__ZCSB_COMPUTE_INLINE__*/ null", inline_iife, 1)
     html_inject = read_inject(HTML_INJECT_PATH)
     patches = []
     src = by_path[HOST_PATH][1]
@@ -123,6 +160,11 @@ def new_contents(data, force=False):
 
 
 def cmd_status():
+    reason = anchor_check()
+    if reason:
+        print("asar: {}".format(ASAR_PATH))
+        print("薄壳补丁: 不适用 —— {}".format(reason))
+        return 0
     data = asarlib.read_bytes(ASAR_PATH)
     print("asar: {}".format(ASAR_PATH))
     print("补丁状态: {}".format("已打补丁" if asarlib.contains(data, SENTINEL) else "未打补丁"))
@@ -141,6 +183,10 @@ def cmd_status():
 
 
 def cmd_apply(dry, force=False):
+    reason = anchor_check()
+    if reason:
+        print("拒绝: {}".format(reason))
+        return 2
     data = asarlib.read_bytes(ASAR_PATH)
     if not force and asarlib.contains(data, SENTINEL):
         print("当前 asar 已打补丁，无需重复操作（如需重打请加 --force）")
@@ -163,10 +209,15 @@ def cmd_apply(dry, force=False):
         print("拒绝: ZCode 桌面端正在运行（app.asar 被锁定）。请关闭后重试。")
         return 3
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    bd = asarlib.backup_dir(RES_DIR, ts, BACKUP_TS_PATTERN)
-    asarlib.copy_file(ASAR_PATH, os.path.join(bd, BACKUP_FILE_NAME))
-    asarlib.prune_backups(RES_DIR, BACKUP_TS_PATTERN, BACKUP_KEEP, BACKUP_FILE_NAME)
-    asarlib.write_bytes(ASAR_PATH, cand)
+    try:
+        bd = asarlib.backup_dir(RES_DIR, ts, BACKUP_TS_PATTERN)
+        asarlib.copy_file(ASAR_PATH, os.path.join(bd, BACKUP_FILE_NAME))
+        asarlib.prune_backups(RES_DIR, BACKUP_TS_PATTERN, BACKUP_KEEP, BACKUP_FILE_NAME)
+        asarlib.write_bytes(ASAR_PATH, cand)
+    except PermissionError:
+        log("写入被拒（{} 需管理员）".format(ASAR_PATH))
+        print("拒绝: 写入 {} 需要管理员权限。请双击 patch/elevate-install.cmd（UAC 确认后自动完成）。".format(ASAR_PATH))
+        return 4
     log("补丁已写入: 备份={} 改动={}".format(bd, changed))
     print("完成。备份: {}。重启 ZCode 后底部 bar 生效。".format(bd))
     return 0
@@ -193,7 +244,9 @@ def cmd_install_triggers():
 
 
 def main():
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    # 不强制 stdout 编码：控制台场景交给 Python 原生控制台 API（GBK 控制台正常显示中文），
+    # 管道场景跟随系统区域设置。强制 utf-8 在 cp936 控制台会输出乱码。
+    sys.stdout.reconfigure(errors="replace")
     ap = argparse.ArgumentParser(description="stats-bar 薄壳补丁器")
     ap.add_argument("action", choices=["status", "apply", "restore", "install-triggers"])
     ap.add_argument("--dry", action="store_true")
